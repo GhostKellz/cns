@@ -1,4 +1,4 @@
-# zqns — Zig QUIC Name Server
+# CNS — a cryptographic QUIC Name Server
 
 `cns` is a blazing-fast, encrypted DNS server and resolver written in Zig with full QUIC (HTTP/3) support. It is designed for modern internet use, seamlessly integrating with zero-trust architectures, self-hosted networks, and next-gen systems like GhostMesh.
 
