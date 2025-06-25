@@ -3,8 +3,10 @@ const dns = @import("dns.zig");
 const server = @import("server.zig");
 const enhanced_server = @import("enhanced_server.zig");
 const cache = @import("cache.zig");
+const enhanced_cache = @import("enhanced_cache.zig");
 const config = @import("config.zig");
 const tls_manager = @import("tls_manager.zig");
+const database = @import("database.zig");
 
 // Legacy DNS components
 pub const Server = server.Server;
@@ -19,6 +21,11 @@ pub const Config = config.Config;
 pub const EnhancedServer = enhanced_server.EnhancedServer;
 pub const TlsManager = tls_manager.TlsManager;
 pub const TlsConfiguration = tls_manager.TlsConfiguration;
+
+// Database layer with ZQLite v0.4.0
+pub const Database = database.Database;
+pub const DNSAnalytics = database.DNSAnalytics;
+pub const EnhancedDNSCache = enhanced_cache.EnhancedDNSCache;
 
 test {
     std.testing.refAllDecls(@This());

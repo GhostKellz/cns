@@ -40,7 +40,12 @@
         // Enhanced TLS 1.3 cryptographic library
         .zcrypto = .{
             .url = "https://github.com/ghostkellz/zcrypto/archive/main.tar.gz",
-            .hash = "zcrypto-0.0.0-rgQAI9hbAwB7WRH0-PNGeVMkmnvjhdSCCbojWFRyK-EQ",
+            .hash = "zcrypto-0.0.0-rgQAI8fbAwClmk2Me7c0fNLBtFWbukRh3ZgB2_IckfYz",
+        },
+        // ZQLite v0.4.0 - High-performance SQL database with encryption (updated)
+        .zqlite = .{
+            .url = "https://github.com/ghostkellz/zqlite/archive/main.tar.gz",
+            .hash = "zqlite-0.4.0-0Cdu4lREBQAn6qz7Fwg5KDh8V7Kwc2JBEUxJjUckkP9V",
         },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{

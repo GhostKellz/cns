@@ -1,20 +1,25 @@
-//! Enhanced CNS Server with HTTP/3, QUIC, and TLS 1.3 support
-//! Leverages zquic HTTP/3 server and zcrypto TLS implementation
+//! Enhanced CNS Server with HTTP/3, QUIC, TLS 1.3, and ZQLite v0.4.0 support
+//! Leverages zquic HTTP/3 server, zcrypto TLS implementation, and ZQLite database
 
 const std = @import("std");
 const zquic = @import("zquic");
 const zcrypto = @import("zcrypto");
 const dns = @import("dns.zig");
 const cache = @import("cache.zig");
+const enhanced_cache = @import("enhanced_cache.zig");
 const config = @import("config.zig");
 const tls_manager = @import("tls_manager.zig");
+const database = @import("database.zig");
 
 const log = std.log.scoped(.enhanced_cns);
 
 pub const EnhancedServer = struct {
     allocator: std.mem.Allocator,
     config: config.Config,
-    cache: cache.DNSCache,
+    
+    // Database and caching
+    database: *database.Database,
+    enhanced_cache: enhanced_cache.EnhancedDNSCache,
     
     // Network components
     udp_threads: []std.Thread,
@@ -29,15 +34,29 @@ pub const EnhancedServer = struct {
     
     // Control
     running: std.atomic.Value(bool),
-    
+
     pub fn init(allocator: std.mem.Allocator, config_path: ?[]const u8) !EnhancedServer {
         const cfg = try config.Config.loadFromFile(allocator, config_path);
-        const dns_cache = try cache.DNSCache.init(allocator, cfg.cache_size);
+        
+        // Initialize database with ZQLite v0.4.0
+        const db = try database.Database.init(allocator, .{
+            .db_path = "cns.db",
+            .encryption_key = "cns_default_key_change_in_production",
+            .enable_analytics = true,
+        });
+        
+        // Initialize enhanced cache with database backend
+        const enhanced_dns_cache = try enhanced_cache.EnhancedDNSCache.init(
+            allocator, 
+            db, 
+            cfg.cache_size / 4 // Keep 1/4 in memory, rest in database
+        );
         
         return EnhancedServer{
             .allocator = allocator,
             .config = cfg,
-            .cache = dns_cache,
+            .database = db,
+            .enhanced_cache = enhanced_dns_cache,
             .udp_threads = &[_]std.Thread{},
             .tcp_listener = null,
             .tls_mgr = null,
@@ -48,10 +67,11 @@ pub const EnhancedServer = struct {
             .running = std.atomic.Value(bool).init(false),
         };
     }
-    
+
     pub fn deinit(self: *EnhancedServer) void {
         self.stop();
-        self.cache.deinit();
+        self.enhanced_cache.deinit();
+        self.database.deinit();
         self.config.deinit();
         self.allocator.free(self.udp_threads);
         
@@ -63,8 +83,9 @@ pub const EnhancedServer = struct {
     pub fn start(self: *EnhancedServer) !void {
         self.running.store(true, .monotonic);
         
-        log.info("🚀 Starting Enhanced CNS server with HTTP/3 + TLS 1.3...", .{});
-        log.info("📊 Cache size: {} entries", .{self.config.cache_size});
+        log.info("🚀 Starting Enhanced CNS server with ZQLite v0.4.0, HTTP/3 + TLS 1.3...", .{});
+        log.info("📊 Cache: {} memory entries, persistent database backend", .{self.config.cache_size / 4});
+        log.info("🗄️  Database: {} with encryption and memory pooling", .{self.database.db_path});
         log.info("🌐 Blockchain TLDs: .ghost, .chain, .bc (root zone)", .{});
         
         // Initialize TLS configuration
@@ -264,6 +285,7 @@ pub const EnhancedServer = struct {
     
     /// Process DNS query and return response
     fn processDnsQuery(self: *EnhancedServer, query: []const u8) ![]u8 {
+        const start_time = std.time.milliTimestamp();
         _ = self.queries_total.fetchAdd(1, .monotonic);
         
         if (query.len < 12) {
@@ -272,87 +294,71 @@ pub const EnhancedServer = struct {
             return error.InvalidDnsQuery;
         }
         
-        // Parse the DNS query to extract domain name
-        const domain_name = try self.extractDomainName(query);
-        defer self.allocator.free(domain_name);
+        // Parse the DNS query to extract domain name and type
+        const query_info = try self.parseDnsQuery(query);
+        defer self.allocator.free(query_info.domain);
         
-        log.debug("🔍 Processing query for domain: {s}", .{domain_name});
+        log.debug("🔍 Processing query for domain: {s} (type: {})", .{ query_info.domain, query_info.query_type });
         
-        // Check cache first
-        if (self.cache.get(domain_name)) |cached_packet| {
-            log.debug("💾 Cache hit for {s}", .{domain_name});
-            // Convert DNSPacket back to bytes
-            return try self.packetToBytes(cached_packet);
-        }
+        // Create cache key
+        const cache_key = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}:{d}:{d}",
+            .{ query_info.domain, query_info.query_type, query_info.query_class },
+        );
+        defer self.allocator.free(cache_key);
         
-        // Check if it's a blockchain domain
-        if (self.isBlockchainDomain(domain_name)) {
-            _ = self.queries_blockchain.fetchAdd(1, .monotonic);
-            const response = try self.handleBlockchainQuery(domain_name, query);
-            // Note: Caching requires DNSPacket, so we'll skip caching for now
-            return response;
-        }
+        var cache_hit = false;
+        var response_data: []u8 = undefined;
         
-        // Forward to upstream resolver
-        const response = try self.forwardQuery(query, domain_name);
-        
-        // Note: Caching requires DNSPacket, so we'll skip caching for now
-        
-        return response;
-    }
-    
-    /// Convert DNSPacket to bytes (placeholder implementation)
-    fn packetToBytes(self: *EnhancedServer, packet: dns.DNSPacket) ![]u8 {
-        // This is a placeholder - in a real implementation, this would serialize the packet
-        _ = packet;
-        return try self.allocator.dupe(u8, &[_]u8{ 0, 0, 0, 0 }); // Minimal response
-    }
-    
-    /// Extract domain name from DNS query
-    fn extractDomainName(self: *EnhancedServer, query: []const u8) ![]u8 {
-        if (query.len < 13) return error.InvalidDnsQuery;
-        
-        // Skip DNS header (12 bytes) and start parsing the question section
-        var pos: usize = 12;
-        var domain_parts = std.ArrayList([]const u8).init(self.allocator);
-        defer domain_parts.deinit();
-        
-        while (pos < query.len and query[pos] != 0) {
-            const label_len = query[pos];
-            if (label_len == 0) break;
+        // Check enhanced cache (memory + database)
+        if (self.enhanced_cache.get(cache_key)) |cached_packet| {
+            log.debug("💾 Enhanced cache hit for {s}", .{query_info.domain});
+            cache_hit = true;
+            response_data = try self.packetToBytes(cached_packet);
+        } else {
+            // Check if it's a blockchain domain
+            if (self.isBlockchainDomain(query_info.domain)) {
+                _ = self.queries_blockchain.fetchAdd(1, .monotonic);
+                response_data = try self.handleBlockchainQuery(query_info.domain, query);
+            } else {
+                // Forward to upstream resolver
+                response_data = try self.forwardQuery(query, query_info.domain);
+            }
             
-            pos += 1;
-            if (pos + label_len > query.len) return error.InvalidDnsQuery;
-            
-            const label = query[pos..pos + label_len];
-            try domain_parts.append(label);
-            pos += label_len;
-        }
-        
-        // Join domain parts with dots
-        if (domain_parts.items.len == 0) {
-            return try self.allocator.dupe(u8, ".");
-        }
-        
-        var total_len: usize = 0;
-        for (domain_parts.items) |part| {
-            total_len += part.len + 1; // +1 for dot
-        }
-        total_len -= 1; // Remove last dot
-        
-        var result = try self.allocator.alloc(u8, total_len);
-        var write_pos: usize = 0;
-        
-        for (domain_parts.items, 0..) |part, i| {
-            @memcpy(result[write_pos..write_pos + part.len], part);
-            write_pos += part.len;
-            if (i < domain_parts.items.len - 1) {
-                result[write_pos] = '.';
-                write_pos += 1;
+            // Cache the response for future use
+            if (response_data.len > 12) { // Valid DNS response
+                const response_packet = try self.bytesToPacket(response_data);
+                self.enhanced_cache.put(cache_key, response_packet, 300) catch |err| {
+                    log.warn("Failed to cache DNS response: {}", .{err});
+                };
             }
         }
         
-        return result;
+        // Log query for analytics
+        const response_time = @as(u32, @intCast(std.time.milliTimestamp() - start_time));
+        self.database.logDNSQuery(
+            query_info.domain,
+            query_info.query_type,
+            query_info.query_class,
+            "unknown", // TODO: Extract client IP
+            response_time,
+            cache_hit,
+            "UDP", // TODO: Detect protocol
+        ) catch |err| {
+            log.warn("Failed to log DNS query: {}", .{err});
+        };
+        
+        return response_data;
+    }
+    
+    /// Convert DNSPacket to bytes (improved implementation)
+    fn packetToBytes(self: *EnhancedServer, packet: dns.DNSPacket) ![]u8 {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+        defer buffer.deinit();
+        
+        try packet.serialize(buffer.writer());
+        return try self.allocator.dupe(u8, buffer.items);
     }
     
     /// Check if domain is a blockchain domain
@@ -708,5 +714,86 @@ pub const EnhancedServer = struct {
         if (total > 0 and total % 100 == 0) {
             log.info("📊 Stats - Total: {}, HTTP/3: {}, Blockchain: {}, Failed: {}", .{ total, http3, blockchain, failed });
         }
+    }
+    
+    /// Get enhanced analytics from database
+    pub fn getAnalytics(self: *EnhancedServer, hours_back: u32) !database.DNSAnalytics {
+        return self.database.getDNSAnalytics(hours_back);
+    }
+    
+    /// Get cache statistics
+    pub fn getCacheStats(self: *EnhancedServer) enhanced_cache.CacheStats {
+        return self.enhanced_cache.getStats();
+    }
+    
+    /// Get memory statistics from ZQLite
+    pub fn getMemoryStats(self: *EnhancedServer) database.Database.MemoryStats {
+        return self.database.getMemoryStats();
+    }
+    
+    /// Periodic cleanup of expired cache entries
+    pub fn performMaintenance(self: *EnhancedServer) !void {
+        const expired_count = try self.enhanced_cache.cleanup();
+        
+        // Cleanup memory pools every 1000 queries
+        const total_queries = self.queries_total.load(.monotonic);
+        if (total_queries % 1000 == 0) {
+            self.database.cleanupMemory();
+            log.info("🧹 Performed maintenance: {} expired entries, memory pools cleaned", .{expired_count});
+        }
+    }
+    
+    const QueryInfo = struct {
+        domain: []u8,
+        query_type: u16,
+        query_class: u16,
+    };
+
+    /// Parse DNS query to extract domain name, type, and class
+    fn parseDnsQuery(self: *EnhancedServer, query: []const u8) !QueryInfo {
+        if (query.len < 13) return error.InvalidDnsQuery;
+        
+        // Skip DNS header (12 bytes) and start parsing the question section
+        var pos: usize = 12;
+        var domain_parts = std.ArrayList([]const u8).init(self.allocator);
+        defer domain_parts.deinit();
+        
+        while (pos < query.len and query[pos] != 0) {
+            const label_len = query[pos];
+            if (label_len == 0) break;
+            
+            pos += 1;
+            if (pos + label_len > query.len) return error.InvalidDnsQuery;
+            
+            const label = query[pos..pos + label_len];
+            try domain_parts.append(label);
+            pos += label_len;
+        }
+        
+        // Skip null terminator
+        if (pos < query.len and query[pos] == 0) {
+            pos += 1;
+        }
+        
+        // Extract query type and class
+        if (pos + 4 > query.len) return error.InvalidDnsQuery;
+        
+        const query_type = std.mem.readInt(u16, query[pos..pos + 2][0..2], .big);
+        const query_class = std.mem.readInt(u16, query[pos + 2..pos + 4][0..2], .big);
+        
+        // Join domain parts
+        const domain = try std.mem.join(self.allocator, ".", domain_parts.items);
+        
+        return QueryInfo{
+            .domain = domain,
+            .query_type = query_type,
+            .query_class = query_class,
+        };
+    }
+
+    /// Convert bytes to DNSPacket
+    fn bytesToPacket(self: *EnhancedServer, bytes: []const u8) !dns.DNSPacket {
+        var stream = std.io.fixedBufferStream(bytes);
+        return dns.DNSPacket.deserialize(self.allocator, stream.reader());
     }
 };

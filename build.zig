@@ -31,6 +31,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zqlite = b.dependency("zqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -53,6 +57,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "zquic", .module = zquic.module("zquic") },
             .{ .name = "zcrypto", .module = zcrypto.module("zcrypto") },
+            .{ .name = "zqlite", .module = zqlite.module("zqlite") },
         },
     });
 
@@ -96,6 +101,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "cns", .module = mod },
                 .{ .name = "zquic", .module = zquic.module("zquic") },
                 .{ .name = "zcrypto", .module = zcrypto.module("zcrypto") },
+                .{ .name = "zqlite", .module = zqlite.module("zqlite") },
             },
         }),
     });
