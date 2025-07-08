@@ -2,7 +2,6 @@
 //! Provides secure, high-performance TLS setup for QUIC and HTTP/3
 
 const std = @import("std");
-const zcrypto = @import("zcrypto");
 
 const log = std.log.scoped(.cns_tls);
 
@@ -14,6 +13,11 @@ pub const TlsManager = struct {
         cert_chain: []u8,
         private_key: []u8,
         domains: [][]const u8,
+    };
+    
+    pub const QuicSecrets = struct {
+        client_initial_secret: [32]u8,
+        server_initial_secret: [32]u8,
     };
     
     pub const TlsConfiguration = struct {
@@ -191,11 +195,11 @@ pub const TlsManager = struct {
     }
     
     /// Get TLS secrets for QUIC
-    pub fn getQuicSecrets(self: *TlsManager, connection_id: []const u8) !zcrypto.tls.Secrets {
+    pub fn getQuicSecrets(self: *TlsManager, connection_id: []const u8) !QuicSecrets {
         _ = self;
         // This would normally derive proper QUIC secrets
         // For now, return a dummy implementation
-        var secrets = zcrypto.tls.Secrets{
+        var secrets = QuicSecrets{
             .client_initial_secret = std.mem.zeroes([32]u8),
             .server_initial_secret = std.mem.zeroes([32]u8),
         };

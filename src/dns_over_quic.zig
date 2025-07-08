@@ -3,7 +3,6 @@
 
 const std = @import("std");
 const zquic = @import("zquic");
-const zcrypto = @import("zcrypto");
 const dns = @import("dns.zig");
 const tls_manager = @import("tls_manager.zig");
 

@@ -1,7 +1,5 @@
 const std = @import("std");
 const cns = @import("cns");
-const zquic = @import("zquic");
-const zcrypto = @import("zcrypto");
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;

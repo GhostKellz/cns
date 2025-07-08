@@ -52,7 +52,7 @@ pub const Server = struct {
         self.running.store(true, .monotonic);
         
         log.info("🚀 Starting CNS server...", .{});
-        log.info("📊 Cache size: {} entries", .{self.config.cache_size});
+        log.info("📊 Cache size: {d} entries", .{self.config.cache_size});
         log.info("🌐 Blockchain TLDs: .ghost, .chain, .bc (root zone)", .{});
         
         // Start UDP listeners
@@ -331,7 +331,7 @@ pub const Server = struct {
         const blockchain = self.queries_blockchain.load(.monotonic);
         const cache_stats = self.cache.getStats();
         
-        log.info("📊 Stats - Queries: {} | Failed: {} | Blockchain: {} | Cache hit rate: {d:.1}%", .{
+        log.info("📊 Stats - Queries: {d} | Failed: {d} | Blockchain: {d} | Cache hit rate: {d:.1}%", .{
             total,
             failed,
             blockchain,
