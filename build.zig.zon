@@ -35,12 +35,12 @@
         // ZQLite v0.7.0 - High-performance SQL database with encryption, JOINs, and aggregates
         .zqlite = .{
             .url = "https://github.com/ghostkellz/zqlite/archive/main.tar.gz",
-            .hash = "zqlite-0.7.0-0Cdu4jvfBwBXkuFggkf5fVvszwd-_0nVoIqCs2Wb--uB",
+            .hash = "zqlite-0.8.0-0Cdu4tFyCABhTRW4RF-MAxDbRzeE-2FnfhJQ63d1nWFG",
         },
         // Shroud v0.4.0 - Unified networking library with HTTP/3, QUIC, TLS 1.3, and cryptography
         .shroud = .{
             .url = "https://github.com/ghostkellz/shroud/archive/main.tar.gz",
-            .hash = "122070b3c10a2bd82405cf1bef779789685bce2cb71dd95bfbc540b92d23f57bfd7b",
+            .hash = "shroud-0.5.0-z7C8mUBi5Acgo0PJIvKPC33P79z0uzwYWEjs1ApNoli-",
         },
     },
     // Specifies the set of files and directories that are included in this package.
