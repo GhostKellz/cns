@@ -10,6 +10,7 @@ const dns = @import("dns.zig");
 const cache = @import("cache.zig");
 const config = @import("config.zig");
 const database = @import("database.zig");
+const identity_manager = @import("identity_manager.zig");
 const zqlite = @import("zqlite");
 
 const log = std.log.scoped(.enhanced_cns);
@@ -19,13 +20,14 @@ pub const EnhancedServer = struct {
     config: config.Config,
     cache: cache.DNSCache,
     database: ?*database.Database,
+    identity_mgr: ?identity_manager.CNSIdentityManager,
 
     // Network components using ghostnet and zquic (simplified for now)
     tcp_listener: ?std.net.Server,
     udp_socket: ?std.net.Server,
     quic_server: ?*zquic.Http3.Http3Server,
 
-    // Shroud identity and security components
+    // Shroud identity and security components (deprecated - moved to identity_mgr)
     identity_manager: ?*shroud.IdentityManager,
     cross_chain_resolver: ?*shroud.CrossChainResolver,
     guardian: ?*shroud.Guardian,
@@ -57,6 +59,7 @@ pub const EnhancedServer = struct {
             .config = cfg,
             .cache = dns_cache,
             .database = db,
+            .identity_mgr = null,
             .tcp_listener = null,
             .udp_socket = null,
             .quic_server = null,
@@ -74,6 +77,11 @@ pub const EnhancedServer = struct {
     pub fn deinit(self: *EnhancedServer) void {
         self.stop();
         
+        // Clean up identity manager
+        if (self.identity_mgr) |*mgr| {
+            mgr.deinit();
+        }
+        
         if (self.database) |db| {
             db.deinit();
         }
@@ -85,8 +93,11 @@ pub const EnhancedServer = struct {
     pub fn start(self: *EnhancedServer) !void {
         self.running.store(true, .monotonic);
         
-        // Initialize Shroud identity and security components
-        try self.initializeShroudIdentity();
+        // Initialize comprehensive identity management system
+        try self.initializeIdentitySystem();
+        
+        // Test identity-aware resolution
+        try self.testIdentityResolution();
         
         // Initialize networking components
         try self.initializeNetworking();
@@ -142,21 +153,24 @@ pub const EnhancedServer = struct {
         log.info("🌐 Networking components initialized (TCP:5353, UDP:5354 + planned zquic HTTP/3)", .{});
     }
 
-    /// Initialize Shroud identity and security components
-    fn initializeShroudIdentity(self: *EnhancedServer) !void {
-        // Generate a CNS service identity using Shroud (simplified for now)
-        const cns_identity = try shroud.generateIdentity(self.allocator, .{
-            .passphrase = "CNS-Server-Identity-v1.2.0",
-            .device_binding = false,
-        });
+    /// Initialize comprehensive identity management system
+    fn initializeIdentitySystem(self: *EnhancedServer) !void {
+        log.info("🆔 Initializing CNS Identity Management System...", .{});
         
-        log.info("🛡️  Shroud identity initialized for CNS service", .{});
-        log.info("🔐 CNS now supports identity-aware DNS resolution", .{});
-        log.info("🆔 Ready for QUIC-based identity integration with DID support", .{});
-        log.info("🌟 Shroud v1.2.3 identity platform integrated successfully!", .{});
-        
-        // Store identity reference (simplified for demo)
-        _ = cns_identity; // TODO: Store properly in production
+        // Get database connection from our database wrapper
+        if (self.database) |db| {
+            // Initialize the comprehensive identity manager
+            const identity_mgr = try identity_manager.CNSIdentityManager.init(self.allocator, db.connection);
+            self.identity_mgr = identity_mgr;
+            
+            log.info("🛡️  CNS Identity Manager initialized successfully!", .{});
+            log.info("🔐 Ready for identity-aware DNS resolution with QUIC-based DIDs", .{});
+            log.info("� Supporting Web3 domains, traditional DNS, and cross-chain identity", .{});
+            log.info("� QID-based identity verification enabled", .{});
+        } else {
+            log.err("❌ Database not initialized - cannot start identity system", .{});
+            return error.DatabaseNotInitialized;
+        }
     }
 
     /// Test ZQLite v1.2.0 integration and zcrypto functionality
@@ -203,5 +217,33 @@ pub const EnhancedServer = struct {
         try zcrypto.random.fill(&random_bytes);
         
         log.info("🎲 zcrypto random generation test successful! Bytes: {x}", .{std.fmt.fmtSliceHexLower(&random_bytes)});
+    }
+
+    /// Resolve DNS query with identity verification and QUIC-based DID support
+    pub fn resolveWithIdentity(self: *EnhancedServer, domain: []const u8, client_qid: ?[]const u8) !identity_manager.DNSResolutionResult {
+        if (self.identity_mgr) |*mgr| {
+            return try mgr.resolveWithIdentity(domain, client_qid);
+        } else {
+            return error.IdentitySystemNotInitialized;
+        }
+    }
+    
+    /// Test the identity-aware resolution system
+    pub fn testIdentityResolution(self: *EnhancedServer) !void {
+        log.info("🧪 Testing CNS Identity-Aware DNS Resolution...", .{});
+        
+        // Test traditional domain
+        const result1 = try self.resolveWithIdentity("example.com", null);
+        log.info("📡 Traditional: {} - Trust: {}", .{ result1.resolved, result1.trust_level });
+        
+        // Test Web3 domain  
+        const result2 = try self.resolveWithIdentity("vitalik.eth", null);
+        log.info("🌐 Web3: {} - Trust: {}", .{ result2.resolved, result2.trust_level });
+        
+        // Test with client QID
+        const result3 = try self.resolveWithIdentity("secure.example", "fd00:1234:5678:9abc:def0:1234:5678:9abc");
+        log.info("🔐 With QID: {} - Trust: {}", .{ result3.resolved, result3.trust_level });
+        
+        log.info("✅ Identity resolution tests completed!", .{});
     }
 };
