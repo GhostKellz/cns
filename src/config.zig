@@ -81,29 +81,54 @@ pub const Config = struct {
     allocator: std.mem.Allocator,
     
     pub fn init(allocator: std.mem.Allocator) Config {
+        // Create empty slices properly allocated
+        const empty_addresses = allocator.alloc(std.net.Address, 0) catch &[_]std.net.Address{};
+        const empty_resolvers = allocator.alloc(std.net.Address, 0) catch &[_]std.net.Address{};
+        const empty_tlds = allocator.alloc([]const u8, 0) catch &[_][]const u8{};
+        
         return Config{
-            .bind_addresses = &[_]std.net.Address{},
-            .upstream_resolvers = &[_]std.net.Address{},
+            .bind_addresses = empty_addresses,
+            .upstream_resolvers = empty_resolvers,
+            .blockchain_tlds = empty_tlds,
             .allocator = allocator,
         };
     }
     
     pub fn deinit(self: *Config) void {
-        self.allocator.free(self.bind_addresses);
-        self.allocator.free(self.upstream_resolvers);
+        // Clean up arrays
+        if (self.bind_addresses.len > 0) {
+            self.allocator.free(self.bind_addresses);
+        }
+        if (self.upstream_resolvers.len > 0) {
+            self.allocator.free(self.upstream_resolvers);
+        }
+        
+        // Clean up optional strings
         if (self.blockchain_rpc_url) |url| {
-            self.allocator.free(url);
+            if (url.len > 0) {
+                self.allocator.free(url);
+            }
         }
         if (self.blockchain_chain_id) |id| {
-            self.allocator.free(id);
+            if (id.len > 0) {
+                self.allocator.free(id);
+            }
         }
         if (self.ens_rpc_url) |url| {
-            self.allocator.free(url);
+            if (url.len > 0) {
+                self.allocator.free(url);
+            }
         }
+        
+        // Clean up blockchain TLDs
         for (self.blockchain_tlds) |tld| {
-            self.allocator.free(tld);
+            if (tld.len > 0) {
+                self.allocator.free(tld);
+            }
         }
-        self.allocator.free(self.blockchain_tlds);
+        if (self.blockchain_tlds.len > 0) {
+            self.allocator.free(self.blockchain_tlds);
+        }
     }
     
     pub fn loadFromFile(allocator: std.mem.Allocator, path: ?[]const u8) !Config {
@@ -124,26 +149,26 @@ pub const Config = struct {
     pub fn getDefaultConfig(allocator: std.mem.Allocator) !Config {
         var config = Config.init(allocator);
         
-        // Default bind addresses (all interfaces)
-        var bind_addresses = try allocator.alloc(std.net.Address, 2);
-        bind_addresses[0] = try std.net.Address.parseIp("0.0.0.0", 53);
-        bind_addresses[1] = try std.net.Address.parseIp("::", 53);
+        // Default bind addresses (localhost only, unprivileged ports)
+        var bind_addresses = try allocator.alloc(std.net.Address, 1);
+        bind_addresses[0] = try std.net.Address.parseIp("127.0.0.1", 5353);
         config.bind_addresses = bind_addresses;
         
         // Default upstream resolvers
-        var upstreams = try allocator.alloc(std.net.Address, 4);
+        var upstreams = try allocator.alloc(std.net.Address, 2);
         upstreams[0] = try std.net.Address.parseIp("1.1.1.1", 53);
-        upstreams[1] = try std.net.Address.parseIp("1.0.0.1", 53);
-        upstreams[2] = try std.net.Address.parseIp("8.8.8.8", 53);
-        upstreams[3] = try std.net.Address.parseIp("8.8.4.4", 53);
+        upstreams[1] = try std.net.Address.parseIp("8.8.8.8", 53);
         config.upstream_resolvers = upstreams;
         
         // Default blockchain TLDs
         var tlds = try allocator.alloc([]const u8, 3);
-        tlds[0] = try allocator.dupe(u8, "ghost");
-        tlds[1] = try allocator.dupe(u8, "chain");
-        tlds[2] = try allocator.dupe(u8, "bc");
+        tlds[0] = try allocator.dupe(u8, "eth");
+        tlds[1] = try allocator.dupe(u8, "crypto");
+        tlds[2] = try allocator.dupe(u8, "web3");
         config.blockchain_tlds = tlds;
+        
+        // Override default port to unprivileged
+        config.port = 5353;
         
         return config;
     }

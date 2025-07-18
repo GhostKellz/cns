@@ -1,8 +1,9 @@
-//! DNS-over-QUIC (DoQ) Implementation using zquic
+//! DNS-over-QUIC (DoQ) Implementation using zquic and ghostnet
 //! RFC 9250 compliant DNS transport over QUIC protocol
 
 const std = @import("std");
 const zquic = @import("zquic");
+const ghostnet = @import("ghostnet");
 const dns = @import("dns.zig");
 const tls_manager = @import("tls_manager.zig");
 

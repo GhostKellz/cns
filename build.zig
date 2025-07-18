@@ -23,6 +23,18 @@ pub fn build(b: *std.Build) void {
     // in this directory.
 
     // Import dependencies
+    const zcrypto = b.dependency("zcrypto", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zquic = b.dependency("zquic", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const ghostnet = b.dependency("ghostnet", .{
+        .target = target,
+        .optimize = optimize,
+    });
     const shroud = b.dependency("shroud", .{
         .target = target,
         .optimize = optimize,
@@ -51,6 +63,9 @@ pub fn build(b: *std.Build) void {
         // which requires us to specify a target.
         .target = target,
         .imports = &.{
+            .{ .name = "zcrypto", .module = zcrypto.module("zcrypto") },
+            .{ .name = "zquic", .module = zquic.module("zquic") },
+            .{ .name = "ghostnet", .module = ghostnet.module("ghostnet") },
             .{ .name = "shroud", .module = shroud.module("shroud") },
             .{ .name = "zqlite", .module = zqlite.module("zqlite") },
         },
@@ -94,6 +109,9 @@ pub fn build(b: *std.Build) void {
                 // can be extremely useful in case of collisions (which can happen
                 // importing modules from different packages).
                 .{ .name = "cns", .module = mod },
+                .{ .name = "zcrypto", .module = zcrypto.module("zcrypto") },
+                .{ .name = "zquic", .module = zquic.module("zquic") },
+                .{ .name = "ghostnet", .module = ghostnet.module("ghostnet") },
                 .{ .name = "shroud", .module = shroud.module("shroud") },
                 .{ .name = "zqlite", .module = zqlite.module("zqlite") },
             },

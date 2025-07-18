@@ -2,6 +2,7 @@
 //! Provides secure, high-performance TLS setup for QUIC and HTTP/3
 
 const std = @import("std");
+const zcrypto = @import("zcrypto");
 
 const log = std.log.scoped(.cns_tls);
 
@@ -121,47 +122,39 @@ pub const TlsManager = struct {
         log.info("📜 Loaded certificate for {} domains", .{domains.len});
     }
     
-    /// Generate a self-signed certificate for development
+    /// Generate a self-signed certificate for development using zcrypto
     fn generateSelfSignedCertificate(self: *TlsManager) !void {
-        // Create a simple self-signed certificate
-        // This is a placeholder - in a real implementation, you'd use zcrypto's capabilities
-        const cert_pem =
-            \\-----BEGIN CERTIFICATE-----
-            \\MIICljCCAX4CCQCKkxT1jmqrWDANBgkqhkiG9w0BAQsFADCBhTELMAkGA1UEBhMC
-            \\VVMxEzARBgNVBAgMCkNhbGlmb3JuaWExFjAUBgNVBAcMDVNhbiBGcmFuY2lzY28x
-            \\FDASBgNVBAoMC0dob3N0S2VsbHoxEDAOBgNVBAsMB0dob3N0Q05TMSEwHwYDVQQD
-            \\DBhsb2NhbGhvc3QuZ2hvc3RrZWxsei5jb20wHhcNMjQwMTAxMDAwMDAwWhcNMjUw
-            \\MTAxMDAwMDAwWjCBhTELMAkGA1UEBhMCVVMxEzARBgNVBAgMCkNhbGlmb3JuaWEx
-            \\FjAUBgNVBAcMDVNhbiBGcmFuY2lzY28xFDASBgNVBAoMC0dob3N0S2VsbHoxEDAO
-            \\BgNVBAsMB0dob3N0Q05TMSEwHwYDVQQDDBhsb2NhbGhvc3QuZ2hvc3RrZWxsei5j
-            \\b20wXDANBgkqhkiG9w0BAQEFAAOCAQsAMIIBCgKCAQEA0X3Z8Q8X3Z8Q8X3Z8Q8X
-            \\3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q
-            \\8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z
-            \\8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X
-            \\3Z8Q8X3Z8Q8X3Z8Q8X3Z8QIDAQABMA0GCSqGSIb3DQEBCwUAA4IBAQCZrU8X3Z8Q
-            \\8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z
-            \\8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X
-            \\3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q
-            \\-----END CERTIFICATE-----
-        ;
+        // Use zcrypto to generate a proper self-signed certificate
+        const rng = std.crypto.random;
         
-        const key_pem =
-            \\-----BEGIN PRIVATE KEY-----
-            \\MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDRfdnxDxfdnxDx
-            \\fdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnx
-            \\DxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfd
-            \\nxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDxfdnxDx
-            \\fdnxDxfdnxDxfdnxDxfdnxDxfdnxAgMBAAECggEBAM394X3Z8Q8X3Z8Q8X3Z8Q8X
-            \\3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z
-            \\8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q
-            \\8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X
-            \\3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z
-            \\8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q
-            \\8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X
-            \\3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z
-            \\8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q8X3Z8Q
-            \\-----END PRIVATE KEY-----
-        ;
+        // Generate RSA key pair using zcrypto
+        const key_pair = try zcrypto.rsa.generateKeyPair(self.allocator, 2048, rng);
+        defer key_pair.deinit();
+        
+        // Create certificate using zcrypto
+        const cert_builder = zcrypto.x509.CertificateBuilder.init(self.allocator);
+        defer cert_builder.deinit();
+        
+        try cert_builder.setSubject("CN=localhost,O=GhostCNS,C=US");
+        try cert_builder.setIssuer("CN=localhost,O=GhostCNS,C=US"); // Self-signed
+        try cert_builder.setValidityPeriod(
+            std.time.timestamp(),
+            std.time.timestamp() + (365 * 24 * 60 * 60), // 1 year
+        );
+        try cert_builder.setPublicKey(key_pair.public_key);
+        
+        // Add Subject Alternative Names
+        try cert_builder.addSAN(.dns, "localhost");
+        try cert_builder.addSAN(.dns, "127.0.0.1");
+        try cert_builder.addSAN(.dns, "cns.local");
+        
+        // Sign certificate with private key
+        const cert_der = try cert_builder.sign(key_pair.private_key, .sha256WithRSA);
+        defer self.allocator.free(cert_der);
+        
+        // Convert to PEM format
+        const cert_pem = try zcrypto.pem.encode(self.allocator, "CERTIFICATE", cert_der);
+        const key_pem = try zcrypto.pem.encodePrivateKey(self.allocator, key_pair.private_key);
         
         const domains = try self.allocator.alloc([]const u8, 3);
         domains[0] = try self.allocator.dupe(u8, "localhost");
@@ -169,8 +162,8 @@ pub const TlsManager = struct {
         domains[2] = try self.allocator.dupe(u8, "cns.local");
         
         const certificate = Certificate{
-            .cert_chain = try self.allocator.dupe(u8, cert_pem),
-            .private_key = try self.allocator.dupe(u8, key_pem),
+            .cert_chain = cert_pem,
+            .private_key = key_pem,
             .domains = domains,
         };
         
@@ -179,7 +172,7 @@ pub const TlsManager = struct {
         new_certs[new_certs.len - 1] = certificate;
         self.certificates = new_certs;
         
-        log.info("🔧 Generated self-signed certificate for development", .{});
+        log.info("🔧 Generated self-signed certificate using zcrypto", .{});
     }
     
     /// Extract domain names from certificate
@@ -194,21 +187,37 @@ pub const TlsManager = struct {
         return domains;
     }
     
-    /// Get TLS secrets for QUIC
+    /// Get TLS secrets for QUIC using zcrypto
     pub fn getQuicSecrets(self: *TlsManager, connection_id: []const u8) !QuicSecrets {
         _ = self;
-        // This would normally derive proper QUIC secrets
-        // For now, return a dummy implementation
+        
+        // Use zcrypto HKDF to derive proper QUIC secrets
+        const salt = "QUIC-CNS-Initial-Salt";
+        const info_client = "client initial secret";
+        const info_server = "server initial secret";
+        
         var secrets = QuicSecrets{
             .client_initial_secret = std.mem.zeroes([32]u8),
             .server_initial_secret = std.mem.zeroes([32]u8),
         };
         
-        // Use connection ID to seed the secrets (simplified)
-        if (connection_id.len > 0) {
-            secrets.client_initial_secret[0] = connection_id[0];
-            secrets.server_initial_secret[0] = connection_id[0] +% 1;
-        }
+        // Derive client initial secret using HKDF-SHA256
+        try zcrypto.hkdf.expand(
+            zcrypto.hash.sha256,
+            connection_id,
+            salt,
+            info_client,
+            secrets.client_initial_secret[0..],
+        );
+        
+        // Derive server initial secret using HKDF-SHA256
+        try zcrypto.hkdf.expand(
+            zcrypto.hash.sha256,
+            connection_id,
+            salt,
+            info_server,
+            secrets.server_initial_secret[0..],
+        );
         
         return secrets;
     }

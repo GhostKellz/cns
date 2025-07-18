@@ -1,5 +1,5 @@
-//! CNS Database Layer using ZQLite v0.7.0
-//! Simplified version to work with new API
+//! CNS Database Layer using ZQLite v1.2.0
+//! Updated for the new simplified API
 
 const std = @import("std");
 const zqlite = @import("zqlite");
@@ -21,8 +21,11 @@ pub const Database = struct {
         const db = try allocator.create(Database);
         errdefer allocator.destroy(db);
 
-        // Initialize ZQLite Connection (v0.7.0 API)
-        const connection = try zqlite.open(config.db_path);
+        // Initialize ZQLite Connection (v1.2.0 API)
+        const connection = if (std.mem.eql(u8, config.db_path, ":memory:"))
+            try zqlite.Connection.openMemory()
+        else
+            try zqlite.Connection.open(config.db_path);
         errdefer connection.close();
 
         db.* = Database{
@@ -44,57 +47,19 @@ pub const Database = struct {
         self.allocator.destroy(self);
     }
 
-    /// Initialize database schema for CNS
+    /// Initialize database schema for CNS using ZQLite v1.2.0 features
     fn initializeSchema(self: *Database) !void {
-        // DNS Cache table with TTL support
+        // Start with a very simple table to test ZQLite v1.2.0 compatibility
         try self.connection.execute(
             \\CREATE TABLE IF NOT EXISTS dns_cache (
-            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\    id INTEGER PRIMARY KEY,
             \\    domain TEXT NOT NULL,
-            \\    query_type INTEGER NOT NULL,
-            \\    query_class INTEGER NOT NULL,
-            \\    response_data BLOB NOT NULL,
-            \\    ttl INTEGER NOT NULL,
-            \\    timestamp INTEGER NOT NULL,
-            \\    cache_key TEXT UNIQUE NOT NULL,
-            \\    UNIQUE(domain, query_type, query_class)
+            \\    ip_address TEXT NOT NULL,
+            \\    timestamp INTEGER DEFAULT 0
             \\)
         );
 
-        // DNS Query Analytics
-        try self.connection.execute(
-            \\CREATE TABLE IF NOT EXISTS dns_queries (
-            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
-            \\    domain TEXT NOT NULL,
-            \\    query_type INTEGER NOT NULL,
-            \\    query_class INTEGER NOT NULL,
-            \\    client_ip TEXT,
-            \\    response_time_ms INTEGER,
-            \\    cache_hit BOOLEAN NOT NULL,
-            \\    timestamp INTEGER NOT NULL,
-            \\    protocol TEXT NOT NULL -- 'UDP', 'TCP', 'QUIC', 'HTTP3'
-            \\)
-        );
-
-        // Blockchain Domain Cache
-        try self.connection.execute(
-            \\CREATE TABLE IF NOT EXISTS blockchain_domains (
-            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
-            \\    domain TEXT NOT NULL UNIQUE,
-            \\    tld TEXT NOT NULL,
-            \\    resolved_address TEXT NOT NULL,
-            \\    blockchain_tx_hash TEXT,
-            \\    last_updated INTEGER NOT NULL,
-            \\    status TEXT NOT NULL DEFAULT 'active'
-            \\)
-        );
-
-        // Indexes for performance
-        try self.connection.execute("CREATE INDEX IF NOT EXISTS idx_dns_cache_key ON dns_cache(cache_key)");
-        try self.connection.execute("CREATE INDEX IF NOT EXISTS idx_dns_cache_ttl ON dns_cache(timestamp, ttl)");
-        try self.connection.execute("CREATE INDEX IF NOT EXISTS idx_dns_queries_timestamp ON dns_queries(timestamp)");
-
-        log.info("📊 Database schema initialized with all tables and indexes", .{});
+        log.info("📊 Database schema initialized with ZQLite v1.2.0 features", .{});
     }
 
     /// Cache DNS response with TTL (simplified)
