@@ -186,7 +186,7 @@ pub const Server = struct {
                 
                 var response = cached_response;
                 response.header.id = packet.header.id; // Update transaction ID
-                try response.serialize(response_stream.writer());
+                try response.serializeToWriter(response_stream.writer());
                 
                 _ = try std.posix.sendto(
                     socket,
@@ -232,7 +232,7 @@ pub const Server = struct {
             // Send response
             var response_buf: [4096]u8 = undefined;
             var response_stream = std.io.fixedBufferStream(&response_buf);
-            try response.serialize(response_stream.writer());
+            try response.serializeToWriter(response_stream.writer());
             
             _ = try std.posix.sendto(
                 socket,
@@ -279,7 +279,7 @@ pub const Server = struct {
         // Serialize query
         var query_buf: [4096]u8 = undefined;
         var query_stream = std.io.fixedBufferStream(&query_buf);
-        try query.serialize(query_stream.writer());
+        try query.serializeToWriter(query_stream.writer());
         const query_data = query_stream.getWritten();
         
         // Try each upstream resolver

@@ -1,0 +1,62 @@
+install
++- install cns
+   +- compile exe cns Debug native 8 errors
+/usr/lib/zig/lib/std/Io/Writer.zig:1101:9: error: ambiguous format string; specify {f} to call format method, or {any} to skip it
+        @compileError("ambiguous format string; specify {f} to call format method, or {any} to skip it");
+        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+referenced by:
+    print__anon_50161: /usr/lib/zig/lib/std/Io/Writer.zig:670:25
+    format__anon_48959: /usr/lib/zig/lib/std/fmt.zig:84:39
+    18 reference(s) hidden; use '-freference-trace=20' to see all references
+/usr/lib/zig/lib/std/Io/Writer.zig:1257:21: error: cannot format slice without a specifier (i.e. {s}, {x}, {b64}, or {any})
+                    @compileError("cannot format slice without a specifier (i.e. {s}, {x}, {b64}, or {any})");
+                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/cns_doq_server.zig:117:71: error: expected error union type, found 'web3_resolver.Web3Resolver'
+            server.web3_resolver = try web3_resolver.Web3Resolver.init(allocator);
+                                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+src/web3_resolver.zig:164:26: note: struct declared here
+pub const Web3Resolver = struct {
+                         ^~~~~~
+src/enhanced_server.zig:392:48: error: expected type '[]const u8', found 'dns.DNSPacket'
+            return try self.allocator.dupe(u8, cached_response);
+                                               ^~~~~~~~~~~~~~~
+src/dns.zig:202:23: note: struct declared here
+pub const DNSPacket = struct {
+                      ^~~~~~
+/usr/lib/zig/lib/std/mem/Allocator.zig:433:56: note: parameter type declared here
+pub fn dupe(allocator: Allocator, comptime T: type, m: []const T) Error![]T {
+                                                       ^~~~~~~~~
+src/enhanced_server.zig:496:8: error: expected 2 argument(s), found 1
+    log.info("🔧 TCP worker started");
+    ~~~^~~~~
+/usr/lib/zig/lib/std/log.zig:189:13: note: function declared here
+        pub fn info(
+        ~~~~^~
+src/identity_manager.zig:49:20: error: root source file struct 'fmt' has no member named 'fmtSliceHexLower'
+            std.fmt.fmtSliceHexLower(&self.ipv6),
+            ~~~~~~~^~~~~~~~~~~~~~~~~
+/usr/lib/zig/lib/std/fmt.zig:1:1: note: struct declared here
+//! String formatting and parsing.
+^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/identity_manager.zig:95:105: error: root source file struct 'crypto.hmac' has no member named 'HmacSha512'
+        try std.crypto.pwhash.pbkdf2(&self.master_seed, mnemonic, passphrase, 4096, std.crypto.auth.hmac.HmacSha512);
+                                                                                    ~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/usr/lib/zig/lib/std/crypto/hmac.zig:1:1: note: struct declared here
+const std = @import("../std.zig");
+^~~~~
+src/web3_resolver.zig:319:24: error: expected type '*web3_resolver.Web3Record', found '*const web3_resolver.Web3Record'
+        if (web3_record.getRecord(record_key)) |value| {
+            ~~~~~~~~~~~^~~~~~~~~~
+src/web3_resolver.zig:319:24: note: cast discards const qualifier
+src/web3_resolver.zig:93:28: note: parameter type declared here
+    pub fn getRecord(self: *Web3Record, key: []const u8) ?[]const u8 {
+                           ^~~~~~~~~~~
+error: the following command failed with 8 compilation errors:
+/usr/lib/zig/zig build-exe -ODebug --dep cns --dep zcrypto --dep zquic --dep ghostnet --dep shroud --dep zqlite -Mroot=/data/projects/cns/src/main.zig --dep zcrypto --dep zquic --dep ghostnet --dep shroud --dep zqlite -Mcns=/data/projects/cns/src/root.zig --dep zsync -Mzcrypto=/home/chris/.cache/zig/p/zcrypto-0.8.4-rgQAI6I0DQD3T7Vk5_S-EaUxMAhoXp7YvJtnzInpG7U1/src/root.zig --dep zcrypto --dep zsync -Mzquic=/home/chris/.cache/zig/p/zquic-0.8.2-2rPdszxenBMHPfgmfwgDnBiL6MBy55i7NktMbEizfLeB/src/root.zig --dep zsync --dep zcrypto --dep zquic=zquic0 -Mghostnet=/home/chris/.cache/zig/p/ghostnet-0.3.1-mG-fWHAcCACvgCzGkNPhjXTmKnS9e8DN0mRN15xiRjez/src/root.zig -Mshroud=/home/chris/.cache/zig/p/shroud-1.2.3-z7C8mbkLBQAWkrWAGcZpLI1ySO4_ciBrdiDYOyHdD2g0/src/root.zig -ODebug --dep zsync -Mzqlite=/home/chris/.cache/zig/p/zqlite-1.2.1-0Cdu4loCDAC76ydtuPGqRi57pBu2rPH3HB74rLBikIpv/src/zqlite.zig -Mzsync=/home/chris/.cache/zig/p/zsync-0.3.2-KAuhed0XGADaOKjYNl34Ragvca2zBYqvoAsBV-AhkoLS/src/root.zig --dep zcrypto=zcrypto0 --dep zsync -Mzquic0=/home/chris/.cache/zig/p/zquic-0.8.0-2rPdsz6KmRN6DaxicN_GS-x9Gaeg3qlFo6cKfa3s1KDO/src/root.zig --dep zsync -Mzcrypto0=/home/chris/.cache/zig/p/zcrypto-0.8.3-rgQAI8wFDAD5qBCumYyC-gCZpzacQHbApwyvXj-ZCbiG/src/root.zig --cache-dir .zig-cache --global-cache-dir /home/chris/.cache/zig --name cns --zig-lib-dir /usr/lib/zig/lib/ --listen=-
+Build Summary: 0/3 steps succeeded; 1 failed
+install transitive failure
++- install cns transitive failure
+   +- compile exe cns Debug native 8 errors
+
+error: the following build command failed with exit code 1:
+.zig-cache/o/aa532456304d3778382596721fa303bd/build /usr/lib/zig/zig /usr/lib/zig/lib /data/projects/cns .zig-cache /home/chris/.cache/zig --seed 0x3bb3132c -Zbaf4b9bb3227d49e

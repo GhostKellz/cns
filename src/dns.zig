@@ -1,4 +1,6 @@
 const std = @import("std");
+const identity_manager = @import("identity_manager.zig");
+const web3_resolver = @import("web3_resolver.zig");
 
 // DNS constants
 pub const DNS_PORT = 53;
@@ -33,6 +35,9 @@ pub const RType = enum(u16) {
     // Web3 extensions
     ENS = 0xFF01,
     GHOST = 0xFF02,
+    // Signed DNS extensions
+    RRSIG = 46,
+    DNSKEY = 48,
     
     pub fn toString(self: RType) []const u8 {
         return switch (self) {
@@ -47,6 +52,8 @@ pub const RType = enum(u16) {
             .SRV => "SRV",
             .ENS => "ENS",
             .GHOST => "GHOST",
+            .RRSIG => "RRSIG",
+            .DNSKEY => "DNSKEY",
         };
     }
 };
@@ -231,7 +238,17 @@ pub const DNSPacket = struct {
         self.allocator.free(self.additionals);
     }
     
-    pub fn serialize(self: DNSPacket, writer: anytype) !void {
+    pub fn serialize(self: DNSPacket, allocator: std.mem.Allocator) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator);
+        defer buffer.deinit();
+        const writer = buffer.writer();
+        
+        try self.serializeToWriter(writer);
+        
+        return buffer.toOwnedSlice();
+    }
+    
+    pub fn serializeToWriter(self: DNSPacket, writer: anytype) !void {
         try self.header.serialize(writer);
         
         for (self.questions) |q| {
@@ -355,6 +372,383 @@ test "DNS header serialization" {
     try std.testing.expectEqual(header.id, deserialized.id);
     try std.testing.expectEqual(header.flags, deserialized.flags);
     try std.testing.expectEqual(header.qdcount, deserialized.qdcount);
+}
+
+// Main DNS query processing function with identity support
+pub fn processQuery(allocator: std.mem.Allocator, query_data: []const u8) ![]u8 {
+    return processQueryWithIdentity(allocator, query_data, null);
+}
+
+// Process query with optional identity manager and web3 resolver
+pub fn processQueryWithIdentity(allocator: std.mem.Allocator, query_data: []const u8, id_manager: ?*identity_manager.IdentityManager) ![]u8 {
+    return processQueryWithWeb3(allocator, query_data, id_manager, null);
+}
+
+// Process query with full feature set
+pub fn processQueryWithWeb3(allocator: std.mem.Allocator, query_data: []const u8, id_manager: ?*identity_manager.IdentityManager, web3_res: ?*web3_resolver.Web3Resolver) ![]u8 {
+    var stream = std.io.fixedBufferStream(query_data);
+    const reader = stream.reader();
+    
+    // Parse the incoming DNS packet
+    var packet = DNSPacket.deserialize(allocator, reader) catch |err| {
+        std.log.err("Failed to parse DNS packet: {}", .{err});
+        return createErrorResponse(allocator, 0, RCODE_FORMAT_ERROR);
+    };
+    defer packet.deinit();
+    
+    // Validate the packet is a query
+    if (!packet.header.isQuery()) {
+        return createErrorResponse(allocator, packet.header.id, RCODE_NOT_IMPLEMENTED);
+    }
+    
+    // Process each question and build response
+    var response = DNSPacket.init(allocator);
+    response.header.id = packet.header.id;
+    response.header.setResponse();
+    response.header.qdcount = packet.header.qdcount;
+    
+    // Copy questions to response
+    response.questions = try allocator.alloc(DNSQuestion, packet.questions.len);
+    for (packet.questions, 0..) |q, i| {
+        response.questions[i] = DNSQuestion{
+            .name = try allocator.dupe(u8, q.name),
+            .qtype = q.qtype,
+            .qclass = q.qclass,
+            .allocator = allocator,
+        };
+    }
+    
+    // Build answers
+    var answers = std.ArrayList(DNSRecord).init(allocator);
+    defer answers.deinit();
+    
+    for (packet.questions) |question| {
+        if (try resolveQuestionWithWeb3(allocator, question, id_manager, web3_res)) |answer| {
+            try answers.append(answer);
+        }
+        
+        // Add RRSIG record if we have an identity manager
+        if (id_manager) |manager| {
+            if (try createSignedRecord(allocator, question, manager)) |rrsig| {
+                try answers.append(rrsig);
+            }
+        }
+    }
+    
+    response.answers = try answers.toOwnedSlice();
+    response.header.ancount = @intCast(response.answers.len);
+    
+    // Serialize response
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    
+    try response.serializeToWriter(buffer.writer());
+    response.deinit();
+    
+    return buffer.toOwnedSlice();
+}
+
+// Resolve a DNS question (backward compatibility)
+fn resolveQuestion(allocator: std.mem.Allocator, question: DNSQuestion) !?DNSRecord {
+    return resolveQuestionWithWeb3(allocator, question, null, null);
+}
+
+// Resolve a DNS question with identity support
+fn resolveQuestionWithIdentity(allocator: std.mem.Allocator, question: DNSQuestion, id_manager: ?*identity_manager.IdentityManager) !?DNSRecord {
+    return resolveQuestionWithWeb3(allocator, question, id_manager, null);
+}
+
+// Resolve a DNS question with full feature support
+fn resolveQuestionWithWeb3(allocator: std.mem.Allocator, question: DNSQuestion, id_manager: ?*identity_manager.IdentityManager, web3_res: ?*web3_resolver.Web3Resolver) !?DNSRecord {
+    std.log.debug("Resolving: {s} type: {s}", .{ question.name, question.qtype.toString() });
+    
+    // Check for Web3 domain first
+    if (web3_res) |resolver| {
+        if (web3_resolver.Web3DomainType.fromDomain(question.name) != null) {
+            return resolveWeb3Domain(allocator, question, resolver);
+        }
+    }
+    
+    // Check if this is a QID-based query (IPv6 address format)
+    if (id_manager) |manager| {
+        if (isQIDQuery(question.name)) {
+            return resolveQIDQuery(allocator, question, manager);
+        }
+        
+        // Check for identity-enhanced resolution
+        if (try resolveWithIdentity(allocator, question, manager)) |record| {
+            return record;
+        }
+    }
+    
+    // Handle different record types
+    switch (question.qtype) {
+        .A => {
+            // Simple A record resolution for testing
+            if (std.mem.eql(u8, question.name, "localhost")) {
+                return DNSRecord{
+                    .name = try allocator.dupe(u8, question.name),
+                    .rtype = .A,
+                    .rclass = .IN,
+                    .ttl = 300,
+                    .data = try allocator.dupe(u8, &[_]u8{ 127, 0, 0, 1 }),
+                    .allocator = allocator,
+                };
+            }
+            // Default response for unknown domains
+            return DNSRecord{
+                .name = try allocator.dupe(u8, question.name),
+                .rtype = .A,
+                .rclass = .IN,
+                .ttl = 300,
+                .data = try allocator.dupe(u8, &[_]u8{ 8, 8, 8, 8 }),
+                .allocator = allocator,
+            };
+        },
+        .AAAA => {
+            // IPv6 record for localhost
+            if (std.mem.eql(u8, question.name, "localhost")) {
+                return DNSRecord{
+                    .name = try allocator.dupe(u8, question.name),
+                    .rtype = .AAAA,
+                    .rclass = .IN,
+                    .ttl = 300,
+                    .data = try allocator.dupe(u8, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 }),
+                    .allocator = allocator,
+                };
+            }
+        },
+        .TXT => {
+            // TXT record for testing
+            const txt_data = "CNS Enhanced DNS Server v1.0";
+            return DNSRecord{
+                .name = try allocator.dupe(u8, question.name),
+                .rtype = .TXT,
+                .rclass = .IN,
+                .ttl = 300,
+                .data = try allocator.dupe(u8, txt_data),
+                .allocator = allocator,
+            };
+        },
+        .ENS => {
+            // Web3 ENS resolution placeholder
+            std.log.info("ENS resolution requested for: {s}", .{question.name});
+            return null;
+        },
+        .DNSKEY => {
+            // Return public key for verification
+            if (id_manager) |manager| {
+                const qid = manager.generateQID("default mnemonic", "default passphrase") catch return null;
+                return DNSRecord{
+                    .name = try allocator.dupe(u8, question.name),
+                    .rtype = .DNSKEY,
+                    .rclass = .IN,
+                    .ttl = 3600,
+                    .data = try allocator.dupe(u8, &qid.public_key),
+                    .allocator = allocator,
+                };
+            }
+            return null;
+        },
+        else => {
+            std.log.warn("Unsupported record type: {s}", .{question.qtype.toString()});
+            return null;
+        }
+    }
+    
+    return null;
+}
+
+// Check if query is for a QID (IPv6 address format)
+fn isQIDQuery(name: []const u8) bool {
+    // Check for IPv6 address pattern (simplified)
+    return std.mem.count(u8, name, ":") >= 2 and std.mem.endsWith(u8, name, ".qid");
+}
+
+// Resolve QID-based query
+fn resolveQIDQuery(allocator: std.mem.Allocator, question: DNSQuestion, id_manager: *identity_manager.IdentityManager) !?DNSRecord {
+    // Extract IPv6 from QID query name
+    const ipv6_str = std.mem.trimRight(u8, question.name, ".qid");
+    
+    // Parse IPv6 address (simplified)
+    const ipv6: [16]u8 = std.mem.zeroes([16]u8);
+    _ = ipv6_str; // We'd parse this properly in production
+    
+    // Look up QID by IPv6
+    if (id_manager.getQIDByIpv6(ipv6)) |qid| {
+        switch (question.qtype) {
+            .A => {
+                // Return mapped IPv4 for compatibility
+                return DNSRecord{
+                    .name = try allocator.dupe(u8, question.name),
+                    .rtype = .A,
+                    .rclass = .IN,
+                    .ttl = 300,
+                    .data = try allocator.dupe(u8, &[_]u8{ 127, 0, 0, 1 }),
+                    .allocator = allocator,
+                };
+            },
+            .AAAA => {
+                // Return QID IPv6 address
+                return DNSRecord{
+                    .name = try allocator.dupe(u8, question.name),
+                    .rtype = .AAAA,
+                    .rclass = .IN,
+                    .ttl = 300,
+                    .data = try allocator.dupe(u8, &qid.ipv6),
+                    .allocator = allocator,
+                };
+            },
+            .TXT => {
+                // Return QID information
+                const qid_info = try qid.toString(allocator);
+                defer allocator.free(qid_info);
+                
+                return DNSRecord{
+                    .name = try allocator.dupe(u8, question.name),
+                    .rtype = .TXT,
+                    .rclass = .IN,
+                    .ttl = 300,
+                    .data = try allocator.dupe(u8, qid_info),
+                    .allocator = allocator,
+                };
+            },
+            else => return null,
+        }
+    }
+    
+    return null;
+}
+
+// Resolve Web3 domain
+fn resolveWeb3Domain(allocator: std.mem.Allocator, question: DNSQuestion, web3_res: *web3_resolver.Web3Resolver) !?DNSRecord {
+    _ = allocator;
+    
+    // Resolve the Web3 domain
+    var web3_record = web3_res.resolveDomain(question.name) catch |err| {
+        std.log.err("Failed to resolve Web3 domain {s}: {}", .{ question.name, err });
+        return null;
+    };
+    
+    if (web3_record) |*record| {
+        // Convert Web3 record to DNS record
+        return web3_res.toDNSRecord(record, question) catch |err| {
+            std.log.err("Failed to convert Web3 record to DNS: {}", .{err});
+            return null;
+        };
+    }
+    
+    return null;
+}
+
+// Resolve with identity enhancement
+fn resolveWithIdentity(allocator: std.mem.Allocator, question: DNSQuestion, id_manager: *identity_manager.IdentityManager) !?DNSRecord {
+    _ = allocator;
+    _ = question;
+    _ = id_manager;
+    
+    // Future: Implement identity-enhanced resolution
+    // - Check trust scores
+    // - Apply identity-based filtering
+    // - Return personalized responses
+    
+    return null;
+}
+
+// Create signed DNS record (RRSIG)
+fn createSignedRecord(allocator: std.mem.Allocator, question: DNSQuestion, id_manager: *identity_manager.IdentityManager) !?DNSRecord {
+    // Create RRSIG data structure
+    var rrsig_data = std.ArrayList(u8).init(allocator);
+    defer rrsig_data.deinit();
+    
+    // Type covered (2 bytes)
+    try rrsig_data.writer().writeInt(u16, @intFromEnum(question.qtype), .big);
+    
+    // Algorithm (1 byte) - Ed25519
+    try rrsig_data.writer().writeInt(u8, 15, .big);
+    
+    // Labels (1 byte)
+    const label_count = std.mem.count(u8, question.name, ".");
+    try rrsig_data.writer().writeInt(u8, @intCast(label_count), .big);
+    
+    // Original TTL (4 bytes)
+    try rrsig_data.writer().writeInt(u32, 300, .big);
+    
+    // Signature expiration (4 bytes)
+    const expiration = @as(u32, @intCast(std.time.timestamp() + 3600)); // 1 hour from now
+    try rrsig_data.writer().writeInt(u32, expiration, .big);
+    
+    // Signature inception (4 bytes)
+    const inception = @as(u32, @intCast(std.time.timestamp()));
+    try rrsig_data.writer().writeInt(u32, inception, .big);
+    
+    // Key tag (2 bytes)
+    try rrsig_data.writer().writeInt(u16, 1234, .big);
+    
+    // Signer's name
+    try serializeDomainName(question.name, rrsig_data.writer());
+    
+    // Sign the record
+    const signature = id_manager.signature_manager.signDnsRecord(rrsig_data.items) catch return null;
+    
+    // Append signature to RRSIG data
+    try rrsig_data.appendSlice(&signature);
+    
+    return DNSRecord{
+        .name = try allocator.dupe(u8, question.name),
+        .rtype = .RRSIG,
+        .rclass = .IN,
+        .ttl = 300,
+        .data = try rrsig_data.toOwnedSlice(),
+        .allocator = allocator,
+    };
+}
+
+// Create error response
+fn createErrorResponse(allocator: std.mem.Allocator, id: u16, rcode: u4) ![]u8 {
+    var response = DNSPacket.init(allocator);
+    response.header.id = id;
+    response.header.setResponse();
+    response.header.setRcode(rcode);
+    
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    
+    try response.serializeToWriter(buffer.writer());
+    response.deinit();
+    
+    return buffer.toOwnedSlice();
+}
+
+test "DNS query processing" {
+    const allocator = std.testing.allocator;
+    
+    // Create a simple DNS query for "localhost" A record
+    var query_packet = DNSPacket.init(allocator);
+    query_packet.header.id = 0x1234;
+    query_packet.header.qdcount = 1;
+    
+    const questions = try allocator.alloc(DNSQuestion, 1);
+    questions[0] = DNSQuestion{
+        .name = try allocator.dupe(u8, "localhost"),
+        .qtype = .A,
+        .qclass = .IN,
+        .allocator = allocator,
+    };
+    query_packet.questions = questions;
+    
+    var query_buffer = std.ArrayList(u8).init(allocator);
+    defer query_buffer.deinit();
+    
+    try query_packet.serialize(query_buffer.writer());
+    query_packet.deinit();
+    
+    // Process the query
+    const response = try processQuery(allocator, query_buffer.items);
+    defer allocator.free(response);
+    
+    // Verify response is not empty
+    try std.testing.expect(response.len > 0);
 }
 
 test "Domain name serialization" {

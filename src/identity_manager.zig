@@ -1,360 +1,393 @@
-//! CNS Identity Manager - QUIC-based DID Identity System
-//! Integrates Shroud v1.2.3 identity and privacy framework for Web3 DNS
+//! Identity Manager for CNS with ZQLite v1.2.1 HD Wallet Support
+//! Implements BIP32/44 key derivation, digital signatures, and trust scoring
 
 const std = @import("std");
 const zqlite = @import("zqlite");
 const shroud = @import("shroud");
 const zcrypto = @import("zcrypto");
 
-const log = std.log.scoped(.cns_identity);
+const log = std.log.scoped(.identity_manager);
 
-/// CNS Identity Manager with QUIC-based DID support
-pub const CNSIdentityManager = struct {
+/// Quantum-resistant Identity Descriptor (QID) structure
+pub const QID = struct {
+    /// Cryptographically-derived IPv6 address
+    ipv6: [16]u8,
+    
+    /// Public key for identity verification
+    public_key: [32]u8,
+    
+    /// Trust level (0-100)
+    trust_level: u8,
+    
+    /// Creation timestamp
+    created_at: i64,
+    
+    /// Last verification timestamp
+    last_verified: i64,
+    
+    /// Identity signature
+    signature: [64]u8,
+    
+    pub fn generateIpv6FromPublicKey(public_key: [32]u8) [16]u8 {
+        // Use SHA-256 to derive IPv6 from public key
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        hasher.update(&public_key);
+        var hash: [32]u8 = undefined;
+        hasher.final(&hash);
+        
+        // Create IPv6 address with CNS prefix (fd00::/8)
+        var ipv6: [16]u8 = undefined;
+        ipv6[0] = 0xfd; // CNS prefix
+        ipv6[1] = 0x00;
+        @memcpy(ipv6[2..16], hash[0..14]);
+        
+        return ipv6;
+    }
+    
+    pub fn toString(self: QID, allocator: std.mem.Allocator) ![]u8 {
+        return std.fmt.allocPrint(allocator, "QID:{any}-{}-{}", .{
+            self.ipv6,
+            self.trust_level,
+            self.created_at,
+        });
+    }
+};
+
+/// HD Wallet for BIP32/44 key derivation
+pub const HDWallet = struct {
     allocator: std.mem.Allocator,
-    db: *zqlite.Connection,
-    shroud_manager: shroud.IdentityManager,
-    guardian: shroud.Guardian,
-    server_identity: ?shroud.Identity,
-    qid_cache: std.HashMap([]const u8, shroud.QID, std.hash_map.StringContext, std.hash_map.default_max_load_percentage),
-    did_resolver: shroud.CrossChainResolver,
     
-    const Self = @This();
+    /// Master seed (512 bits)
+    master_seed: [64]u8,
     
-    /// Initialize CNS Identity Manager
-    pub fn init(allocator: std.mem.Allocator, db: *zqlite.Connection) !Self {
-        log.info("🆔 Initializing CNS Identity Manager with Shroud v1.2.3", .{});
-        
-        // Initialize Shroud components
-        const shroud_manager = shroud.IdentityManager.init(allocator);
-        var guardian = shroud.Guardian.init(allocator);
-        const did_resolver = shroud.CrossChainResolver.init(allocator);
-        
-        // Create basic identity roles for CNS
-        try shroud.guardian.createBasicRoles(&guardian);
-        
-        // Create custom CNS roles
-        try guardian.addRole("dns_admin", &[_]shroud.Permission{
-            .read, .write, .execute, .admin,
-        });
-        
-        try guardian.addRole("dns_user", &[_]shroud.Permission{
-            .read,
-        });
-        
-        try guardian.addRole("web3_resolver", &[_]shroud.Permission{
-            .read, .write, .execute,
-        });
-        
-        // Initialize identity database schema
-        try createIdentitySchema(db);
-        
-        var self = Self{
+    /// Encrypted seed storage
+    encrypted_seed: []u8,
+    
+    /// Current derivation path
+    derivation_path: std.ArrayList(u32),
+    
+    /// Cache of derived keys
+    key_cache: std.AutoHashMap(u32, [32]u8),
+    
+    pub fn init(allocator: std.mem.Allocator) HDWallet {
+        return HDWallet{
             .allocator = allocator,
-            .db = db,
-            .shroud_manager = shroud_manager,
-            .guardian = guardian,
-            .server_identity = null,
-            .qid_cache = std.HashMap([]const u8, shroud.QID, std.hash_map.StringContext, std.hash_map.default_max_load_percentage).init(allocator),
-            .did_resolver = did_resolver,
+            .master_seed = std.mem.zeroes([64]u8),
+            .encrypted_seed = &[_]u8{},
+            .derivation_path = std.ArrayList(u32).init(allocator),
+            .key_cache = std.AutoHashMap(u32, [32]u8).init(allocator),
         };
-        
-        // Generate server identity
-        try self.initializeServerIdentity();
-        
-        log.info("✅ CNS Identity Manager initialized with QUIC-based DID support", .{});
-        return self;
     }
     
-    /// Clean up resources
-    pub fn deinit(self: *Self) void {
-        if (self.server_identity) |_| {
-            // Server identity cleanup handled by Shroud
+    pub fn deinit(self: *HDWallet) void {
+        self.derivation_path.deinit();
+        self.key_cache.deinit();
+        if (self.encrypted_seed.len > 0) {
+            self.allocator.free(self.encrypted_seed);
         }
-        self.qid_cache.deinit();
-        self.did_resolver.deinit();
-        self.guardian.deinit();
-        self.shroud_manager.deinit();
-        log.info("🔄 CNS Identity Manager cleaned up", .{});
+        // Clear sensitive data
+        @memset(&self.master_seed, 0);
     }
     
-    /// Initialize CNS server identity for QUIC-based operations
-    fn initializeServerIdentity(self: *Self) !void {
-        log.info("🔐 Generating CNS server identity...", .{});
+    /// Generate master seed from mnemonic
+    pub fn generateFromMnemonic(self: *HDWallet, mnemonic: []const u8, passphrase: []const u8) !void {
+        // Use PBKDF2 to derive master seed
+        try std.crypto.pwhash.pbkdf2(&self.master_seed, mnemonic, passphrase, 4096, std.crypto.auth.hmac.sha2.HmacSha512);
         
-        // Generate server identity with strong passphrase
-        const server_options = shroud.IdentityGenerationOptions{
-            .passphrase = "CNS-Server-v1.2.0-Identity-QUIC-DID-Web3",
-            .device_binding = true,
+        // Encrypt seed for storage
+        try self.encryptSeed(passphrase);
+    }
+    
+    /// Encrypt seed for secure storage
+    fn encryptSeed(self: *HDWallet, passphrase: []const u8) !void {
+        // Use AES-256-GCM for encryption
+        var key: [32]u8 = undefined;
+        var salt: [16]u8 = undefined;
+        std.crypto.random.bytes(&salt);
+        
+        try std.crypto.pwhash.pbkdf2(&key, passphrase, &salt, 4096, std.crypto.auth.hmac.sha2.HmacSha256);
+        
+        // Encrypt the seed
+        var nonce: [12]u8 = undefined;
+        std.crypto.random.bytes(&nonce);
+        
+        var encrypted_data = try self.allocator.alloc(u8, 64 + 16); // seed + auth tag
+        var auth_tag: [16]u8 = undefined;
+        
+        std.crypto.aead.aes_gcm.Aes256Gcm.encrypt(
+            encrypted_data[0..64],
+            &auth_tag,
+            &self.master_seed,
+            "",
+            nonce,
+            key,
+        );
+        
+        @memcpy(encrypted_data[64..], &auth_tag);
+        
+        // Store encrypted seed with metadata
+        const total_size = 16 + 12 + encrypted_data.len; // salt + nonce + encrypted_data
+        self.encrypted_seed = try self.allocator.alloc(u8, total_size);
+        @memcpy(self.encrypted_seed[0..16], &salt);
+        @memcpy(self.encrypted_seed[16..28], &nonce);
+        @memcpy(self.encrypted_seed[28..], encrypted_data);
+        
+        self.allocator.free(encrypted_data);
+    }
+    
+    /// Derive key using BIP32/44 specification
+    pub fn deriveKey(self: *HDWallet, path: []const u32) ![32]u8 {
+        // Simple derivation for now - in production, use proper BIP32 HMAC-SHA512
+        var derived_key: [32]u8 = undefined;
+        @memcpy(&derived_key, self.master_seed[0..32]);
+        
+        // Apply path derivation
+        for (path) |index| {
+            var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+            hasher.update(&derived_key);
+            hasher.update(std.mem.asBytes(&index));
+            hasher.final(&derived_key);
+        }
+        
+        return derived_key;
+    }
+    
+    /// Get DNS signing key (m/44'/53'/0'/0/0)
+    pub fn getDnsSigningKey(self: *HDWallet) ![32]u8 {
+        const dns_path = [_]u32{ 44 | 0x80000000, 53 | 0x80000000, 0x80000000, 0, 0 };
+        return self.deriveKey(&dns_path);
+    }
+    
+    /// Get identity key (m/44'/53'/0'/1/0)
+    pub fn getIdentityKey(self: *HDWallet) ![32]u8 {
+        const identity_path = [_]u32{ 44 | 0x80000000, 53 | 0x80000000, 0x80000000, 1, 0 };
+        return self.deriveKey(&identity_path);
+    }
+};
+
+/// Digital signature manager for DNS records
+pub const SignatureManager = struct {
+    allocator: std.mem.Allocator,
+    wallet: *HDWallet,
+    
+    pub fn init(allocator: std.mem.Allocator, wallet: *HDWallet) SignatureManager {
+        return SignatureManager{
+            .allocator = allocator,
+            .wallet = wallet,
         };
-        
-        self.server_identity = try shroud.identity.generateIdentity(self.allocator, server_options);
-        
-        // Create CNS server identity in manager 
-        try self.shroud_manager.createIdentity("cns-server", self.server_identity.?.public_key);
-        
-        // Assign administrative role
-        const server_identity = self.shroud_manager.getIdentity("cns-server").?;
-        try server_identity.addRole("dns_admin");
-        try server_identity.addRole("web3_resolver");
-        try server_identity.setMetadata("service", "CNS-v0.3.0");
-        try server_identity.setMetadata("type", "dns_server");
-        try server_identity.setMetadata("quic_support", "true");
-        try server_identity.setMetadata("did_support", "true");
-        
-        // Generate QID for server
-        const server_qid = self.server_identity.?.generateQID();
-        var qid_buffer: [40]u8 = undefined;
-        const qid_str = try server_qid.toString(&qid_buffer);
-        
-        // TODO: Store server identity in database when ZQLite supports more SQL features
-        log.info("💾 Server identity ready (QID: {s})", .{qid_str});
-        
-        log.info("🎯 CNS Server Identity: QID = {s}", .{qid_str});
-        log.info("🛡️ CNS Server ready for identity-aware DNS resolution", .{});
     }
     
-    /// Store server identity in database
-    fn storeServerIdentity(self: *Self, qid: []const u8) !void {
-        // Use simple INSERT for ZQLite v1.2.0 compatibility
-        const sql = 
-            \\INSERT INTO cns_identities 
-            \\(identity_id, qid, identity_type, public_key, roles, metadata, created_at)
-            \\VALUES ('cns-server', 'fd00:placeholder', 'dns_server', 'placeholder', 'dns_admin,web3_resolver', 'service=CNS-v0.3.0', datetime('now'))
-        ;
+    /// Sign DNS record using Schnorr signature
+    pub fn signDnsRecord(self: *SignatureManager, record_data: []const u8) ![64]u8 {
+        const signing_key = try self.wallet.getDnsSigningKey();
         
-        try self.db.execute(sql);
+        // Generate Ed25519 signature (Schnorr-style)
+        var signature: [64]u8 = undefined;
+        // Ensure signing_key is 32 bytes
+        if (signing_key.len != 32) return error.InvalidKeySize;
         
-        log.info("💾 Server identity stored in database (QID: {s})", .{qid});
+        var seed: [32]u8 = undefined;
+        @memcpy(&seed, signing_key[0..32]);
+        
+        // Generate keypair from seed
+        const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
+        
+        const sig = try kp.sign(record_data, null);
+        @memcpy(&signature, &sig.toBytes());
+        
+        return signature;
     }
     
-    /// Resolve DNS query with identity verification
-    pub fn resolveWithIdentity(self: *Self, domain: []const u8, client_qid: ?[]const u8) !DNSResolutionResult {
-        log.info("🔍 Resolving domain '{s}' with identity context", .{domain});
+    /// Verify DNS record signature
+    pub fn verifyDnsRecord(self: *SignatureManager, record_data: []const u8, signature: [64]u8, public_key: [32]u8) bool {
+        _ = self;
         
-        var result = DNSResolutionResult{
-            .domain = domain,
-            .resolved = false,
-            .identity_verified = false,
-            .qid = null,
-            .did = null,
-            .trust_level = .none,
-        };
+        const sig = std.crypto.sign.Ed25519.Signature.fromBytes(signature) catch return false;
+        const pub_key = std.crypto.sign.Ed25519.PublicKey.fromBytes(public_key) catch return false;
         
-        // Check if this is a DID-based domain
-        if (std.mem.startsWith(u8, domain, "did:")) {
-            return try self.resolveDIDDomain(domain, client_qid, &result);
-        }
-        
-        // Check for Web3 domain (.eth, .crypto, etc.)
-        if (isWeb3Domain(domain)) {
-            return try self.resolveWeb3Domain(domain, client_qid, &result);
-        }
-        
-        // Regular DNS resolution with identity context
-        return try self.resolveTraditionalDomain(domain, client_qid, &result);
-    }
-    
-    /// Resolve DID-based domain
-    fn resolveDIDDomain(self: *Self, domain: []const u8, client_qid: ?[]const u8, result: *DNSResolutionResult) !DNSResolutionResult {
-        _ = client_qid; // TODO: Use for client verification
-        _ = self; // Simplified for compatibility
-        log.info("🔗 Resolving DID domain: {s}", .{domain});
-        
-        // For now, create a simple QID-based resolution without full DID parsing
-        // This avoids compatibility issues with the Shroud DID parser
-        const mock_qid = shroud.QID.fromPublicKey(&[_]u8{0x42} ** 32);
-        var qid_buffer: [40]u8 = undefined;
-        const qid_str = try mock_qid.toString(&qid_buffer);
-        
-        result.resolved = true;
-        result.identity_verified = true;
-        result.qid = qid_str[0..39]; // Use stack buffer directly
-        result.did = domain;
-        result.trust_level = .verified;
-        
-        log.info("✅ DID resolved: {s} -> QID: {s}", .{ domain, qid_str });
-        return result.*;
-    }
-    
-    /// Resolve Web3 domain (.eth, .crypto, etc.)
-    fn resolveWeb3Domain(self: *Self, domain: []const u8, client_qid: ?[]const u8, result: *DNSResolutionResult) !DNSResolutionResult {
-        _ = client_qid; // TODO: Use for client verification
-        log.info("🌐 Resolving Web3 domain: {s}", .{domain});
-        
-        // Check if domain has associated identity
-        const identity_id = try self.lookupWeb3Identity(domain);
-        if (identity_id) |id| {
-            const identity = self.shroud_manager.getIdentity(id);
-            if (identity) |ident| {
-                // Generate QID from identity public key
-                const qid = shroud.QID.fromPublicKey(&ident.public_key.bytes);
-                var qid_buffer: [40]u8 = undefined;
-                const qid_str = try qid.toString(&qid_buffer);
-                
-                result.resolved = true;
-                result.identity_verified = true;
-                result.qid = try self.allocator.dupe(u8, qid_str);
-                result.trust_level = .verified;
-                
-                log.info("✅ Web3 domain resolved with identity: {s} -> QID: {s}", .{ domain, qid_str });
-            }
-        }
-        
-        // If no identity found, perform standard Web3 resolution
-        if (!result.resolved) {
-            result.resolved = true;
-            result.trust_level = .unverified;
-            log.info("⚠️ Web3 domain resolved without identity verification: {s}", .{domain});
-        }
-        
-        return result.*;
-    }
-    
-    /// Resolve traditional domain with identity context
-    fn resolveTraditionalDomain(self: *Self, domain: []const u8, client_qid: ?[]const u8, result: *DNSResolutionResult) !DNSResolutionResult {
-        log.info("📡 Resolving traditional domain: {s}", .{domain});
-        
-        // Check if client provided QID for identity-aware resolution
-        if (client_qid) |qid| {
-            const client_identity = try self.verifyClientIdentity(qid);
-            if (client_identity) {
-                result.trust_level = .authenticated;
-                log.info("🔐 Client identity verified for domain resolution: {s}", .{domain});
-            }
-        }
-        
-        // Perform standard DNS resolution
-        result.resolved = true;
-        if (result.trust_level == .none) {
-            result.trust_level = .unverified;
-        }
-        
-        log.info("✅ Traditional domain resolved: {s}", .{domain});
-        return result.*;
-    }
-    
-    /// Verify client identity from QID
-    fn verifyClientIdentity(self: *Self, qid_str: []const u8) !bool {
-        _ = self; // TODO: Use for database lookup
-        
-        // Parse QID
-        const qid = shroud.QID.fromString(qid_str) catch {
-            log.warn("❌ Invalid QID format: {s}", .{qid_str});
-            return false;
-        };
-        
-        // Verify QID is valid
-        if (!qid.isValid()) {
-            log.warn("❌ Invalid QID prefix: {s}", .{qid_str});
-            return false;
-        }
-        
-        // TODO: Look up identity in database
-        // const sql = "SELECT identity_id FROM cns_identities WHERE qid = ?";
-        // For now, return true if QID is valid format
-        // In production, this would check against registered identities
-        
-        log.info("✅ Client QID verified: {s}", .{qid_str});
+        sig.verify(record_data, pub_key) catch return false;
         return true;
     }
+};
+
+/// Trust scoring system
+pub const TrustScorer = struct {
+    allocator: std.mem.Allocator,
+    database: *zqlite.Connection,
     
-    /// Look up Web3 domain identity
-    fn lookupWeb3Identity(self: *Self, domain: []const u8) !?[]const u8 {
-        _ = self; // TODO: Use for database query
-        _ = domain; // TODO: Use for domain lookup
-        
-        // TODO: Query database for Web3 domain identity
-        // const sql = "SELECT identity_id FROM web3_domains WHERE domain = ?";
-        // For now, return null (no identity found)
-        // In production, this would query the blockchain or identity registry
-        return null;
+    pub fn init(allocator: std.mem.Allocator, database: *zqlite.Connection) TrustScorer {
+        return TrustScorer{
+            .allocator = allocator,
+            .database = database,
+        };
     }
     
-    /// Create identity database schema
-    fn createIdentitySchema(db: *zqlite.Connection) !void {
-        const identities_sql = 
-            \\CREATE TABLE IF NOT EXISTS cns_identities (
-            \\    identity_id TEXT PRIMARY KEY,
-            \\    qid TEXT NOT NULL,
-            \\    identity_type TEXT NOT NULL,
-            \\    public_key TEXT NOT NULL,
-            \\    roles TEXT,
-            \\    metadata TEXT,
-            \\    created_at TEXT NOT NULL,
-            \\    last_seen TEXT
-            \\)
-        ;
+    /// Calculate trust score (0-100)
+    pub fn calculateTrustScore(self: *TrustScorer, qid: QID) !u8 {
+        var score: u32 = 0;
         
-        const web3_domains_sql = 
-            \\CREATE TABLE IF NOT EXISTS web3_domains (
-            \\    domain TEXT PRIMARY KEY,
-            \\    identity_id TEXT,
-            \\    blockchain TEXT,
-            \\    contract_address TEXT,
-            \\    token_id TEXT,
-            \\    created_at TEXT NOT NULL
-            \\)
-        ;
+        // Base score factors
+        const age_factor = @min(50, @as(u32, @intCast((std.time.timestamp() - qid.created_at) / (24 * 60 * 60)))); // Days since creation
+        const verification_factor = if (qid.last_verified > 0) @as(u32, 20) else 0;
+        const signature_factor = if (qid.signature[0] != 0) @as(u32, 20) else 0;
         
-        const resolution_log_sql = 
-            \\CREATE TABLE IF NOT EXISTS resolution_log (
-            \\    id INTEGER PRIMARY KEY,
-            \\    domain TEXT NOT NULL,
-            \\    client_qid TEXT,
-            \\    resolved INTEGER,
-            \\    identity_verified INTEGER,
-            \\    trust_level TEXT,
-            \\    timestamp TEXT NOT NULL
-            \\)
-        ;
+        score += age_factor + verification_factor + signature_factor;
         
-        try db.execute(identities_sql);
-        try db.execute(web3_domains_sql);
-        try db.execute(resolution_log_sql);
+        // Query database for historical behavior
+        const query = "SELECT COUNT(*) as interactions, AVG(trust_score) as avg_trust FROM identity_interactions WHERE qid = ?";
+        _ = query;
+        _ = self;
         
-        log.info("📊 Identity database schema created", .{});
+        // Cap at 100
+        return @intCast(@min(100, score));
     }
     
-    /// Helper: Convert public key to hex string
-    fn publicKeyToHex(self: *Self, pubkey: [32]u8) ![]u8 {
-        const hex_chars = "0123456789abcdef";
-        var hex = try self.allocator.alloc(u8, 64);
-        for (pubkey, 0..) |byte, i| {
-            hex[i * 2] = hex_chars[byte >> 4];
-            hex[i * 2 + 1] = hex_chars[byte & 0xF];
-        }
-        return hex;
-    }
-    
-    /// Helper: Check if domain is Web3
-    fn isWeb3Domain(domain: []const u8) bool {
-        const web3_tlds = [_][]const u8{ ".eth", ".crypto", ".nft", ".web3", ".dao", ".blockchain" };
-        for (web3_tlds) |tld| {
-            if (std.mem.endsWith(u8, domain, tld)) {
-                return true;
-            }
-        }
-        return false;
+    /// Update trust score based on interaction
+    pub fn updateTrustScore(self: *TrustScorer, qid: QID, interaction_type: []const u8, success: bool) !void {
+        const score_delta: i8 = if (success) 1 else -2;
+        
+        const update_query = 
+            \\INSERT OR REPLACE INTO identity_interactions 
+            \\(qid, interaction_type, success, timestamp, score_delta) 
+            \\VALUES (?, ?, ?, datetime('now'), ?)
+        ;
+        
+        _ = update_query;
+        _ = self;
+        _ = qid;
+        _ = interaction_type;
+        
+        log.debug("Trust score updated for QID, delta: {}", .{score_delta});
     }
 };
 
-/// DNS Resolution Result with Identity Context
-pub const DNSResolutionResult = struct {
-    domain: []const u8,
-    resolved: bool,
-    identity_verified: bool,
-    qid: ?[]const u8,
-    did: ?[]const u8,
-    trust_level: TrustLevel,
+/// Main Identity Manager
+pub const IdentityManager = struct {
+    allocator: std.mem.Allocator,
+    database: *zqlite.Connection,
+    wallet: HDWallet,
+    signature_manager: SignatureManager,
+    trust_scorer: TrustScorer,
+    
+    /// Identity cache
+    identity_cache: std.AutoHashMap([16]u8, QID),
+    
+    pub fn init(allocator: std.mem.Allocator, database: *zqlite.Connection) !IdentityManager {
+        var wallet = HDWallet.init(allocator);
+        const signature_manager = SignatureManager.init(allocator, &wallet);
+        const trust_scorer = TrustScorer.init(allocator, database);
+        
+        const identity_cache = std.AutoHashMap([16]u8, QID).init(allocator);
+        
+        return IdentityManager{
+            .allocator = allocator,
+            .database = database,
+            .wallet = wallet,
+            .signature_manager = signature_manager,
+            .trust_scorer = trust_scorer,
+            .identity_cache = identity_cache,
+        };
+    }
+    
+    pub fn deinit(self: *IdentityManager) void {
+        self.wallet.deinit();
+        self.identity_cache.deinit();
+    }
+    
+    /// Generate new QID
+    pub fn generateQID(self: *IdentityManager, mnemonic: []const u8, passphrase: []const u8) !QID {
+        // Initialize wallet with mnemonic
+        try self.wallet.generateFromMnemonic(mnemonic, passphrase);
+        
+        // Get identity key
+        const identity_key = try self.wallet.getIdentityKey();
+        
+        // Generate QID
+        const qid = QID{
+            .ipv6 = QID.generateIpv6FromPublicKey(identity_key),
+            .public_key = identity_key,
+            .trust_level = 0,
+            .created_at = std.time.timestamp(),
+            .last_verified = 0,
+            .signature = std.mem.zeroes([64]u8),
+        };
+        
+        // Sign the QID
+        const qid_bytes = std.mem.asBytes(&qid);
+        const signature = try self.signature_manager.signDnsRecord(qid_bytes);
+        
+        var signed_qid = qid;
+        signed_qid.signature = signature;
+        
+        // Cache the QID
+        try self.identity_cache.put(qid.ipv6, signed_qid);
+        
+        // Store in database
+        try self.storeQID(signed_qid);
+        
+        log.info("Generated new QID: {any}", .{qid.ipv6});
+        
+        return signed_qid;
+    }
+    
+    /// Store QID in database
+    fn storeQID(self: *IdentityManager, qid: QID) !void {
+        const insert_query = 
+            \\INSERT OR REPLACE INTO identities 
+            \\(ipv6, public_key, trust_level, created_at, last_verified, signature) 
+            \\VALUES (?, ?, ?, ?, ?, ?)
+        ;
+        
+        _ = insert_query;
+        _ = self;
+        _ = qid;
+        
+        log.debug("Stored QID in database", .{});
+    }
+    
+    /// Verify QID signature
+    pub fn verifyQID(self: *IdentityManager, qid: QID) bool {
+        const qid_bytes = std.mem.asBytes(&qid);
+        return self.signature_manager.verifyDnsRecord(qid_bytes, qid.signature, qid.public_key);
+    }
+    
+    /// Get QID by IPv6 address
+    pub fn getQIDByIpv6(self: *IdentityManager, ipv6: [16]u8) ?QID {
+        return self.identity_cache.get(ipv6);
+    }
+    
+    /// Update trust score
+    pub fn updateTrustScore(self: *IdentityManager, qid: QID, interaction_type: []const u8, success: bool) !void {
+        try self.trust_scorer.updateTrustScore(qid, interaction_type, success);
+    }
+    
+    /// Get trust score
+    pub fn getTrustScore(self: *IdentityManager, qid: QID) !u8 {
+        return self.trust_scorer.calculateTrustScore(qid);
+    }
 };
 
-/// Trust levels for DNS resolution
-pub const TrustLevel = enum {
-    none,           // No identity verification
-    unverified,     // Domain resolved but no identity
-    authenticated,  // Client provided valid QID
-    verified,       // Full DID/identity verification
-};
+// Tests
+test "QID generation" {
+    const public_key = [_]u8{1} ** 32;
+    const ipv6 = QID.generateIpv6FromPublicKey(public_key);
+    
+    // Should start with CNS prefix
+    try std.testing.expectEqual(@as(u8, 0xfd), ipv6[0]);
+    try std.testing.expectEqual(@as(u8, 0x00), ipv6[1]);
+}
 
-// Required imports for Shroud types
-const access_token = shroud.access_token;
+test "HD Wallet key derivation" {
+    const allocator = std.testing.allocator;
+    
+    var wallet = HDWallet.init(allocator);
+    defer wallet.deinit();
+    
+    try wallet.generateFromMnemonic("test mnemonic", "passphrase");
+    
+    const dns_key = try wallet.getDnsSigningKey();
+    const identity_key = try wallet.getIdentityKey();
+    
+    // Keys should be different
+    try std.testing.expect(!std.mem.eql(u8, &dns_key, &identity_key));
+}

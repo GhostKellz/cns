@@ -47,19 +47,127 @@ pub const Database = struct {
         self.allocator.destroy(self);
     }
 
-    /// Initialize database schema for CNS using ZQLite v1.2.0 features
+    /// Initialize database schema for CNS using ZQLite v1.2.1 features
     fn initializeSchema(self: *Database) !void {
-        // Start with a very simple table to test ZQLite v1.2.0 compatibility
+        // Enable foreign keys
+        try self.connection.execute("PRAGMA foreign_keys = ON");
+        
+        // Identity table with enhanced features
         try self.connection.execute(
-            \\CREATE TABLE IF NOT EXISTS dns_cache (
-            \\    id INTEGER PRIMARY KEY,
-            \\    domain TEXT NOT NULL,
-            \\    ip_address TEXT NOT NULL,
-            \\    timestamp INTEGER DEFAULT 0
+            \\CREATE TABLE IF NOT EXISTS identities (
+            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\    ipv6 BLOB NOT NULL UNIQUE,
+            \\    public_key BLOB NOT NULL,
+            \\    trust_level INTEGER DEFAULT 0,
+            \\    created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            \\    last_verified INTEGER DEFAULT 0,
+            \\    signature BLOB NOT NULL,
+            \\    verified BOOLEAN DEFAULT FALSE,
+            \\    CONSTRAINT valid_trust_level CHECK (trust_level >= 0 AND trust_level <= 100)
             \\)
         );
+        
+        // Identity interactions for trust scoring
+        try self.connection.execute(
+            \\CREATE TABLE IF NOT EXISTS identity_interactions (
+            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\    identity_id INTEGER NOT NULL,
+            \\    interaction_type TEXT NOT NULL,
+            \\    success BOOLEAN NOT NULL,
+            \\    timestamp INTEGER DEFAULT (strftime('%s', 'now')),
+            \\    score_delta INTEGER DEFAULT 0,
+            \\    FOREIGN KEY (identity_id) REFERENCES identities(id) ON DELETE CASCADE
+            \\)
+        );
+        
+        // Enhanced DNS cache with ZQLite v1.2.1 features
+        try self.connection.execute(
+            \\CREATE TABLE IF NOT EXISTS dns_cache (
+            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\    domain TEXT NOT NULL,
+            \\    query_type INTEGER NOT NULL,
+            \\    query_class INTEGER NOT NULL,
+            \\    response_data BLOB NOT NULL,
+            \\    ttl INTEGER NOT NULL,
+            \\    cached_at INTEGER DEFAULT (strftime('%s', 'now')),
+            \\    expires_at INTEGER GENERATED ALWAYS AS (cached_at + ttl) STORED,
+            \\    hit_count INTEGER DEFAULT 0,
+            \\    UNIQUE(domain, query_type, query_class)
+            \\) WITHOUT ROWID
+        );
+        
+        // Web3 domain cache
+        try self.connection.execute(
+            \\CREATE TABLE IF NOT EXISTS web3_domains (
+            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\    domain TEXT NOT NULL UNIQUE,
+            \\    domain_type TEXT NOT NULL,
+            \\    owner_address BLOB NOT NULL,
+            \\    resolver_address BLOB NOT NULL,
+            \\    content_hash TEXT,
+            \\    block_number INTEGER NOT NULL,
+            \\    transaction_hash BLOB NOT NULL,
+            \\    verified BOOLEAN DEFAULT FALSE,
+            \\    verification_timestamp INTEGER DEFAULT (strftime('%s', 'now')),
+            \\    cached_at INTEGER DEFAULT (strftime('%s', 'now')),
+            \\    CONSTRAINT valid_domain_type CHECK (domain_type IN ('ens', 'crypto', 'nft', 'x', 'wallet', 'bitcoin'))
+            \\)
+        );
+        
+        // Web3 domain records (A, AAAA, TXT, etc.)
+        try self.connection.execute(
+            \\CREATE TABLE IF NOT EXISTS web3_records (
+            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\    domain_id INTEGER NOT NULL,
+            \\    record_type TEXT NOT NULL,
+            \\    record_value TEXT NOT NULL,
+            \\    updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+            \\    FOREIGN KEY (domain_id) REFERENCES web3_domains(id) ON DELETE CASCADE,
+            \\    UNIQUE(domain_id, record_type)
+            \\)
+        );
+        
+        // DNS query analytics
+        try self.connection.execute(
+            \\CREATE TABLE IF NOT EXISTS dns_analytics (
+            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\    domain TEXT NOT NULL,
+            \\    query_type INTEGER NOT NULL,
+            \\    query_class INTEGER NOT NULL,
+            \\    client_ip TEXT,
+            \\    response_time_ms INTEGER NOT NULL,
+            \\    cache_hit BOOLEAN NOT NULL,
+            \\    protocol TEXT NOT NULL,
+            \\    identity_id INTEGER,
+            \\    timestamp INTEGER DEFAULT (strftime('%s', 'now')),
+            \\    FOREIGN KEY (identity_id) REFERENCES identities(id) ON DELETE SET NULL
+            \\)
+        );
+        
+        // Create indexes for performance
+        try self.connection.execute("CREATE INDEX IF NOT EXISTS idx_dns_cache_domain ON dns_cache(domain)");
+        try self.connection.execute("CREATE INDEX IF NOT EXISTS idx_dns_cache_expires ON dns_cache(expires_at)");
+        try self.connection.execute("CREATE INDEX IF NOT EXISTS idx_identity_ipv6 ON identities(ipv6)");
+        try self.connection.execute("CREATE INDEX IF NOT EXISTS idx_identity_trust ON identities(trust_level)");
+        try self.connection.execute("CREATE INDEX IF NOT EXISTS idx_web3_domain ON web3_domains(domain)");
+        try self.connection.execute("CREATE INDEX IF NOT EXISTS idx_analytics_timestamp ON dns_analytics(timestamp)");
+        try self.connection.execute("CREATE INDEX IF NOT EXISTS idx_analytics_domain ON dns_analytics(domain)");
+        
+        // Create views for analytics
+        try self.connection.execute(
+            \\CREATE VIEW IF NOT EXISTS dns_stats AS
+            \\SELECT 
+            \\    domain,
+            \\    COUNT(*) as query_count,
+            \\    AVG(response_time_ms) as avg_response_time,
+            \\    SUM(CASE WHEN cache_hit THEN 1 ELSE 0 END) as cache_hits,
+            \\    COUNT(DISTINCT client_ip) as unique_clients
+            \\FROM dns_analytics 
+            \\WHERE timestamp > strftime('%s', 'now', '-24 hours')
+            \\GROUP BY domain
+        );
 
-        log.info("📊 Database schema initialized with ZQLite v1.2.0 features", .{});
+        log.info("📊 Database schema initialized with ZQLite v1.2.1 enhanced features", .{});
     }
 
     /// Cache DNS response with TTL (simplified)
