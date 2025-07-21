@@ -48,7 +48,7 @@
         },
         .ghostnet = .{
             .url = "https://github.com/ghostkellz/ghostnet/archive/main.tar.gz",
-            .hash = "ghostnet-0.3.1-mG-fWHAcCACvgCzGkNPhjXTmKnS9e8DN0mRN15xiRjez",
+            .hash = "ghostnet-0.3.1-mG-fWGUcCAD_BQZwFVhYZrOInVULI_sbD_kWqhWHcuie",
         },
         .zquic = .{
             .url = "https://github.com/ghostkellz/zquic/archive/main.tar.gz",
