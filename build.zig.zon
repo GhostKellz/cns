@@ -32,12 +32,12 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        // ZQLite v1.2.1 - Blockchain database with HD wallets, encrypted storage, digital signatures, and Web3 support
+        // ZQLite
         .zqlite = .{
             .url = "https://github.com/ghostkellz/zqlite/archive/main.tar.gz",
             .hash = "zqlite-1.2.1-0Cdu4loCDAC76ydtuPGqRi57pBu2rPH3HB74rLBikIpv",
         },
-        // Shroud v0.4.0 - Unified networking library with HTTP/3, QUIC, TLS 1.3, and cryptography
+        // Shroud Identity
         .shroud = .{
             .url = "https://github.com/ghostkellz/shroud/archive/main.tar.gz",
             .hash = "shroud-1.2.3-z7C8mbkLBQAWkrWAGcZpLI1ySO4_ciBrdiDYOyHdD2g0",
